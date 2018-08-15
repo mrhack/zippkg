@@ -19,7 +19,7 @@ I got some problems when I use Python2.7 standard lib `zipfile`. Here are the re
 
 ## Example
 
-```
+```python
 from zippkg import ZipReader
 
 with ZipReader("test.zip") as zipreader:
