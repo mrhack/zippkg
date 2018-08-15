@@ -26,3 +26,9 @@ with ZipReader("test.zip") as zipreader:
     for name in zipreader.namelist():
         print name
 ```
+
+
+## links
+
+[http://www.winzip.com/win/en/aes_info.htm](http://www.winzip.com/win/en/aes_info.htm)  
+[https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
