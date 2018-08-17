@@ -15,6 +15,19 @@ from util.compress import *
 from struct_def import *
 
 
+class Params:
+    '''
+    add dict key to instance's attribute, value to value
+    '''
+
+    def __init__(self, _dict):
+        for k, v in _dict.iteritems():
+            setattr(self, k, v)
+
+    def __getattr__(self, key):
+        return None
+
+
 class BadZipfile(Exception):
     pass
 
@@ -55,13 +68,12 @@ class ZipExtra:
         length = len(self.bytes)
         last_tell = self.stream.tell()
         while last_tell < length:
-            extra = struct_extra_header.parse_stream(self.stream)
+            extra = struct_extra_header.parseStream(self.stream)
             self.all_extra[extra.signature] = extra
-
             struct_detail = self.structs.get(extra.signature)
             if struct_detail:
                 self.stream.seek(last_tell)
-                self.parsed_extra[extra.signature] = struct_detail.parse_stream(self.stream)
+                self.parsed_extra[extra.signature] = struct_detail.parseStream(self.stream)
             else:
                 self.stream.seek(last_tell + extra.size() + extra.data_length)
             last_tell = self.stream.tell()
@@ -79,7 +91,7 @@ class ZipInfo(object):
         self.stream = stream
         self._parseExtra()
 
-    def _check_zip64_extra(self, zip64_extra):
+    def _checkZip64Extra(self, zip64_extra):
         # https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
         # 4.5.3: If one of the size or
         # offset fields in the Local or Central directory
@@ -102,7 +114,7 @@ class ZipInfo(object):
         self.extra = ZipExtra(container.extra_field)
         # zip64
         zip64_extra = self.extra.getExtra(ZipExtra.ZIP64)
-        if zip64_extra and self._check_zip64_extra(zip64_extra):
+        if zip64_extra and self._checkZip64Extra(zip64_extra):
             container.csize = zip64_extra.csize
             container.ucsize = zip64_extra.ucsize
             container.relative_offset_local_header = zip64_extra.relative_offset_local_header
@@ -128,7 +140,7 @@ class ZipInfo(object):
         stream = self.stream
 
         stream.seek(self.container.relative_offset_local_header, os.SEEK_SET)
-        file_header = struct_local_file_header.parse_stream(stream)
+        file_header = struct_local_file_header.parseStream(stream)
 
         content = self._decompress(self._decrypt(file_header.csize, password))
         if not checkCRC(self.crc32, content):
@@ -228,27 +240,27 @@ class ZipReader(object):
             raise BadZipfile("File is not a Zip archive")
 
         stream.seek(stream.tell() - len(footer) + end_central_dir_offset)
-        end_central_dir = struct_end_central_dir_record.parse_stream(stream)
+        end_central_dir = struct_end_central_dir_record.parseStream(stream)
         self.end_central_dir = end_central_dir
-        self.is_zip64 = self._check_zip64()
+        self.is_zip64 = self._checkZip64()
         if self.is_zip64:
-            self._parse_zip64()
+            self._parseZip64()
         self.comment = end_central_dir.zipfile_comment
 
         if end_central_dir.size_central_dir > 0:
             self._parseCentralDirectoryHeader()
 
-    def _parse_zip64(self):
+    def _parseZip64(self):
         # parse zip64 end of central directory locator
         zip64_locator_size = struct_zip64_central_dir_locator.size()
         self.stream.seek(-self.end_central_dir.size() - zip64_locator_size, os.SEEK_END)
-        zip64_locator = struct_zip64_central_dir_locator.parse_stream(self.stream)
+        zip64_locator = struct_zip64_central_dir_locator.parseStream(self.stream)
         if zip64_locator.disk_index_width_zip64_central_dir_record != 0 and zip64_locator.disk_total != 1:
             raise BadZipfile("zipfiles that span multiple disks are not supported")
         # parse zip64 directory record
 
         self.stream.seek(zip64_locator.offset_zip64_central_dir_record)
-        zip64_record = struct_zip64_central_dir_record.parse_stream(self.stream)
+        zip64_record = struct_zip64_central_dir_record.parseStream(self.stream)
 
         self.end_central_dir.signature = zip64_record.signature
         self.end_central_dir.total_entries_central_dir = zip64_record.total_entries_central_dir
@@ -256,7 +268,7 @@ class ZipReader(object):
         self.end_central_dir.size_central_dir = zip64_record.size_central_dir
         self.end_central_dir.offset_start_central_dir = zip64_record.offset_start_central_dir
 
-    def _check_zip64(self):
+    def _checkZip64(self):
         # https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
         # 4.4.1.4: If one of the fields in the end of central directory
         # record is too small to hold required data, the field should be
@@ -277,7 +289,7 @@ class ZipReader(object):
         offset = self.end_central_dir.offset_start_central_dir
         while index < self.end_central_dir.total_entries_central_dir:
             stream.seek(offset, os.SEEK_SET)
-            dir_header = struct_central_dir_header.parse_stream(stream)
+            dir_header = struct_central_dir_header.parseStream(stream)
 
             zinfo = ZipInfo(stream, dir_header, self.password)
             self._fileInfos.append(zinfo)

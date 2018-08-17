@@ -52,10 +52,6 @@ class AESCrypt(Crypt):
         encrypted_data = contents[tell:tell+compressed_file_size]
         authentication_code = contents[tell+compressed_file_size:]
 
-        # print '       salt: ', binascii.hexlify(salt)
-        # print '         pv: ', binascii.hexlify(password_verification_value)
-        # print '  auth code: ', binascii.hexlify(authentication_code)
-
         # If prf is not specified, PBKDF2 uses HMAC-SHA1
         keys = PBKDF2(password, salt, dkLen=key_len * 2 + self.PASSWD_VERIF_LEN, count=self.PBKDF2_ITER)
         if keys[-2:] != password_verification_value:
@@ -84,7 +80,7 @@ class PKWARECrypt(Crypt):
         plain_text = map(zd, cypher_text)
     """
 
-    def _GenerateCRCTable():
+    def _generateCRCTable():
         """Generate a CRC-32 table.
         ZIP encryption uses the CRC32 one-byte primitive for scrambling some
         internal keys. We noticed that a direct implementation is faster than
@@ -101,7 +97,7 @@ class PKWARECrypt(Crypt):
                     crc = ((crc >> 1) & 0x7FFFFFFF)
             table[i] = crc
         return table
-    crctable = _GenerateCRCTable()
+    crctable = _generateCRCTable()
 
     def _crc32(self, ch, crc):
         """Compute the CRC32 primitive on one byte."""
@@ -114,9 +110,9 @@ class PKWARECrypt(Crypt):
         self.key1 = 591751049
         self.key2 = 878082192
         for p in password:
-            self._UpdateKeys(p)
+            self._updateKeys(p)
 
-    def _UpdateKeys(self, c):
+    def _updateKeys(self, c):
         self.key0 = self._crc32(c, self.key0)
         self.key1 = (self.key1 + (self.key0 & 255)) & 4294967295
         self.key1 = (self.key1 * 134775813 + 1) & 4294967295
@@ -132,7 +128,7 @@ class PKWARECrypt(Crypt):
             k = self.key2 | 2
             c = c ^ (((k * (k ^ 1)) >> 8) & 255)
             c = chr(c)
-            self._UpdateKeys(c)
+            self._updateKeys(c)
             data.append(c)
 
         return "".join(data)

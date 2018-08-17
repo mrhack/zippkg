@@ -2,9 +2,9 @@ from util.formater import *
 
 
 class Signature:
-    EXTRA_ZIP64 = 0x0001
-    EXTRA_UPEF = 0x7075
-    EXTRA_AES = 0x9901
+    EXTRA_ZIP64 = b'\x01\x00'
+    EXTRA_UPEF = b'\x75\x70'
+    EXTRA_AES = b'\x01\x99'
 
     CENTRAL_RECORD = b'PK\x05\x06'
     CENTRAL_HEADER = b"PK\x01\x02"
@@ -89,14 +89,14 @@ struct_zip64_central_dir_record = Struct(
 )
 
 struct_extra_header = Struct(
-    Int16ul("signature"),
+    Bytes("signature", 2),
     Int16ul("data_length"),
 )
 # http://www.winzip.com/win/en/aes_info.htm#zip-format
 # AES extra data struct
 
 struct_extra_aes = Struct(
-    Int16ul("signature"),
+    Const("signature", Signature.EXTRA_AES),
     Int16ul("data_length"),
     Int16ul("vendor_version"),
     Int8ul("vender_id", size=2),
@@ -106,7 +106,7 @@ struct_extra_aes = Struct(
 # https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
 # 4.6.9 -Info-ZIP Unicode Path Extra Field (0x7075):
 struct_extra_upef = Struct(
-    Int16ul("signature"),
+    Const("signature", Signature.EXTRA_UPEF),
     Int16ul("data_length"),
     Int8ul("version"),
     Int32ul("crc32"),
@@ -114,7 +114,7 @@ struct_extra_upef = Struct(
 )
 
 struct_extra_zip64 = Struct(
-    Int16ul("signature"),
+    Const("signature", Signature.EXTRA_ZIP64),
     Int16ul("data_length"),
     Int64ul("ucsize"),
     Int64ul("csize"),
