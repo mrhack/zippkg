@@ -1,4 +1,5 @@
 import struct
+from . import Params
 
 
 class FormatError(Exception):
@@ -18,6 +19,9 @@ class __Format(object):
     def __repr__(self):
         return '{}{}: {}'.format(' '*4, self.name, self.value)
 
+    def validate(self, value):
+        pass
+
 
 class _IntFormat(__Format):
     def __init__(self, name, fmt, size, **kws):
@@ -29,6 +33,17 @@ class _IntFormat(__Format):
 
     def getValue(self, val):
         return self.enum.get(val) if self.enum else val
+
+    def validate(self, val):
+        if self.size > 1:
+            if type(val) not in [tuple, list]:
+                raise FormatError("`{}` must be a tuple or list".format(self.name))
+            elif len(val) != self.size:
+                raise FormatError("`{}` got wrong size, size is {}".format(self.name, self.size))
+        elif type(val) is not int:
+            raise FormatError("`{}` must be a number".format(self.name))
+
+        return True
 
 
 class Int8ul(_IntFormat):
@@ -62,11 +77,27 @@ class Bytes(__Format):
             self.field = field
         self.fix = fix
 
+    def validate(self, val):
+        if type(val) != str:
+            raise FormatError("bytes `{}` got wrong type".format(self.name))
+        elif self.size and len(val) != self.size:
+            raise FormatError("bytes `{}` got wrong size".format(self.name))
+
+        return True
+
 
 class Const(__Format):
     def __init__(self, name, value):
         super(Const, self).__init__(name)
         self.value = value
+
+    def validate(self, val):
+        if type(val) != str:
+            raise FormatError("const `{}` got wrong type".format(self.name))
+        elif self.value != val:
+            raise FormatError("const `{}` got wrong value".format(self.name))
+
+        return True
 
 
 class Container(object):
@@ -219,11 +250,31 @@ class Struct(object):
 
         return container
 
+    def __call__(self, **kws):
+        container = Container(self)
+        for f in self.fields:
+            if isinstance(f, Const):
+                if kws.get(f.name) is not None and f.name != f.value:
+                    raise FormatError("`{}` is const, got the wrong value".format(f.name))
+                setattr(container, f.name, f.value)
+            elif isinstance(f, Bytes):
+                val = kws.get(f.name)
+                val = '' if val is None else val
+                setattr(container, f.name, val)
+            else:
+                pass
+                # val = kws.get(f.name)
+                # for k, v in kws.iteritems():
+
+                # setattr(container, f.name, f.value)
+        pass
+
     def _packNormal(self, params, group):
         vals = []
         for f in group.fields:
             val = getattr(params, f.name)
             if val:
+                f.validate(val)
                 if f.size > 1:
                     vals += val
                 else:
@@ -236,28 +287,39 @@ class Struct(object):
     def _packBytes(self, params, group):
         content = ''
         for f in group.fields:
-            con = getattr(params, f.name) or ''
+            val = getattr(params, f.name) or ''
+            f.validate(val)
+
             # check size
             if f.field:
-                define_size = getattr(container, f.field, None)
+                define_size = getattr(params, f.field)
+                if define_size is None:
+                    define_size = 0
             else:
                 define_size = f.size
             if define_size is None:
                 raise FormatError("bytes `{}` need predefined field".format(f.name))
-            if define_size + f.fix != len(con):
+            elif getattr(params, f.name) is None and f.size > 0:
+                raise FormatError("bytes `{}` required".format(f.name))
+            elif define_size + f.fix != len(val):
                 raise FormatError("bytes `{}` length is not correct".format(f.name))
 
-            content += con
+            content += val
         return content
 
     def _packConst(self, params, group):
         content = ''
         for f in group.fields:
-            content += getattr(params, f.name) or ''
+            val = getattr(params, f.name)
+            if val is not None:
+                f.validate(val)
+
+            if val and val != f.value:
+                raise FormatError("const `{}` got wrong value".format(f.name))
+            content += f.value
         return content
 
     def pack(self, **kws):
-        container = Container(self)
         params = Params(kws)
         content = ''
         for group in self.fields_groups:

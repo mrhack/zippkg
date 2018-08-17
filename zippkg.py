@@ -4,35 +4,67 @@ Read and write ZIP files.
 """
 import os
 import zlib
+import stat
+import time
 import math
 import binascii
 from StringIO import StringIO
 
+from util import Params
 from util.formater import *
 from util.crypt import *
 from util.compress import *
-
 from struct_def import *
 
+ZIP64_FILESIZE_LIMIT = (1 << 31) - 1
+ZIP_FILECOUNT_LIMIT = (1 << 16) - 1
+ZIP_MAX_COMMENT = (1 << 16) - 1
 
-class Params:
-    '''
-    add dict key to instance's attribute, value to value
-    '''
+# Zip64 extra field header id
+# ------------------------------------
+# 0x0001        ZIP64 extended information extra field
+# 0x0007        AV Info
+# 0x0009        OS/2 extended attributes      (also Info-ZIP)
+# 0x000a        NTFS (Win9x/WinNT FileTimes)
+# 0x000c        OpenVMS                       (also Info-ZIP)
+# 0x000d        Unix
+# 0x000f        Patch Descriptor
+# 0x0014        PKCS#7 Store for X.509 Certificates
+# 0x0015        X.509 Certificate ID and Signature for
+#             individual file
+# 0x0016        X.509 Certificate ID for Central Directory
 
-    def __init__(self, _dict):
-        for k, v in _dict.iteritems():
-            setattr(self, k, v)
+# The Header ID mappings defined by Info-ZIP and third parties are:
 
-    def __getattr__(self, key):
-        return None
+# 0x0065        IBM S/390 attributes - uncompressed
+# 0x0066        IBM S/390 attributes - compressed
+# 0x07c8        Info-ZIP Macintosh (old, J. Lee)
+# 0x2605        ZipIt Macintosh (first version)
+# 0x2705        ZipIt Macintosh v 1.3.5 and newer (w/o full filename)
+# 0x334d        Info-ZIP Macintosh (new, D. Haase's 'Mac3' field )
+# 0x4154        Tandem NSK
+# 0x4341        Acorn/SparkFS (David Pilling)
+# 0x4453        Windows NT security descriptor (binary ACL)
+# 0x4704        VM/CMS
+# 0x470f        MVS
+# 0x4854        Theos, old inofficial port
+# 0x4b46        FWKCS MD5 (see below)
+# 0x4c41        OS/2 access control list (text ACL)
+# 0x4d49        Info-ZIP OpenVMS (obsolete)
+# 0x4d63        Macintosh SmartZIP, by Macro Bambini
+# 0x4f4c        Xceed original location extra field
+# 0x5356        AOS/VS (binary ACL)
+# 0x5455        extended timestamp
+# 0x5855        Info-ZIP Unix (original; also OS/2, NT, etc.)
+# 0x554e        Xceed unicode extra field
+# 0x6542        BeOS (BeBox, PowerMac, etc.)
+# 0x6854        Theos
+# 0x756e        ASi Unix
+# 0x7855        Info-ZIP Unix (new)
+# 0xfb4a        SMS/QDOS
 
 
 class BadZipfile(Exception):
-    pass
-
-
-class BadPassword(Exception):
     pass
 
 
@@ -81,13 +113,15 @@ class ZipExtra:
     def getExtra(self, signature):
         return self.parsed_extra.get(signature)
 
+    def pack(self):
+        pass
+
 
 class ZipInfo(object):
-    def __init__(self, stream, container, password=None):
-
-        self.is_encrypted = container.general_purpose_bit_flag & 0x1
+    def __init__(self, dir_header=None, stream=None, password=None):
+        self.is_encrypted = dir_header.general_purpose_bit_flag & 0x1
         self.password = password
-        self.container = container
+        self.dir_header = dir_header
         self.stream = stream
         self._parseExtra()
 
@@ -110,39 +144,40 @@ class ZipInfo(object):
         return False
 
     def _parseExtra(self):
-        container = self.container
-        self.extra = ZipExtra(container.extra_field)
+        dir_header = self.dir_header
+        self.extra = ZipExtra(dir_header.extra_field)
         # zip64
         zip64_extra = self.extra.getExtra(ZipExtra.ZIP64)
         if zip64_extra and self._checkZip64Extra(zip64_extra):
-            container.csize = zip64_extra.csize
-            container.ucsize = zip64_extra.ucsize
-            container.relative_offset_local_header = zip64_extra.relative_offset_local_header
+            dir_header.csize = zip64_extra.csize
+            dir_header.ucsize = zip64_extra.ucsize
+            dir_header.relative_offset_local_header = zip64_extra.relative_offset_local_header
 
         # unicode path extra field
         upef_extra = self.extra.getExtra(ZipExtra.UPEF)
-        if container.general_purpose_bit_flag & 0x800:
+        if dir_header.general_purpose_bit_flag & 0x800:
             # UTF-8 file names extension
-            container.filename = container.filename.decode('utf-8')
-        elif upef_extra and checkCRC(upef_extra.crc32, container.filename):
-            container.filename = upef_extra.unicode_name.decode('utf-8')
+            dir_header.filename = dir_header.filename.decode('utf-8')
+        elif upef_extra and checkCRC(upef_extra.crc32, dir_header.filename):
+            dir_header.filename = upef_extra.unicode_name.decode('utf-8')
         else:
             # Historical ZIP filename encoding
-            container.filename = container.filename.decode('cp437')
+            dir_header.filename = dir_header.filename.decode('cp437')
 
     def __getattr__(self, key):
-        if hasattr(self.container, key):
-            return getattr(self.container, key)
+        if hasattr(self.dir_header, key):
+            return getattr(self.dir_header, key)
         else:
             raise AttributeError("attribute `{}` is not exist".format(key))
 
     def read(self, password=None):
         stream = self.stream
 
-        stream.seek(self.container.relative_offset_local_header, os.SEEK_SET)
+        stream.seek(self.dir_header.relative_offset_local_header, os.SEEK_SET)
         file_header = struct_local_file_header.parseStream(stream)
-
-        content = self._decompress(self._decrypt(file_header.csize, password))
+        print file_header
+        size = self.dir_header.csize or file_header.csize
+        content = self._decompress(self._decrypt(size, password))
         if not checkCRC(self.crc32, content):
             raise BadZipfile('crc32 check failed')
 
@@ -291,7 +326,7 @@ class ZipReader(object):
             stream.seek(offset, os.SEEK_SET)
             dir_header = struct_central_dir_header.parseStream(stream)
 
-            zinfo = ZipInfo(stream, dir_header, self.password)
+            zinfo = ZipInfo(dir_header, stream, self.password)
             self._fileInfos.append(zinfo)
             self._fileInfosDict[zinfo.filename] = zinfo
 

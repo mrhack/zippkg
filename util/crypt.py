@@ -9,6 +9,10 @@ class CryptError(Exception):
     pass
 
 
+class BadPassword(Exception):
+    pass
+
+
 class Crypt(object):
     def __init__(self, password):
         self.password = password
@@ -55,7 +59,7 @@ class AESCrypt(Crypt):
         # If prf is not specified, PBKDF2 uses HMAC-SHA1
         keys = PBKDF2(password, salt, dkLen=key_len * 2 + self.PASSWD_VERIF_LEN, count=self.PBKDF2_ITER)
         if keys[-2:] != password_verification_value:
-            raise CryptError("Bad password")
+            raise BadPassword("Bad password")
 
         aes_key, hmac_key = keys[:key_len], keys[key_len:key_len + key_len]
         myhmac = HMAC.new(hmac_key, encrypted_data, SHA).digest()
