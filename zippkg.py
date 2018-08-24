@@ -8,9 +8,10 @@ import stat
 import time
 import math
 import binascii
+import struct
 from StringIO import StringIO
 
-from util import Params
+from util import DictObject
 from util.formater import *
 from util.crypt import *
 from util.compress import *
@@ -86,15 +87,22 @@ class ZipExtra:
         return {
             self.AES: struct_extra_aes,
             self.UPEF: struct_extra_upef,
-            self.ZIP64: struct_extra_zip64,
+            self.ZIP64: parse_struct_extra_zip64,
         }
 
-    def __init__(self, _bytes):
-        self.bytes = _bytes
-        self.stream = StringIO(_bytes)
+    def __init__(self, bytes=None, extras=None):
         self.parsed_extra = {}
         self.all_extra = {}
-        self.parse()
+
+        if bytes:
+            self.bytes = bytes
+            self.stream = StringIO(bytes)
+            self.parse()
+
+        if extras:
+            for extra in extras:
+                self.parsed_extra[extra.signature] = extra
+                self.all_extra[extra.signature] = extra
 
     def parse(self):
         length = len(self.bytes)
@@ -104,8 +112,11 @@ class ZipExtra:
             self.all_extra[extra.signature] = extra
             struct_detail = self.structs.get(extra.signature)
             if struct_detail:
-                self.stream.seek(last_tell)
-                self.parsed_extra[extra.signature] = struct_detail.parseStream(self.stream)
+                if extra.signature == Signature.EXTRA_ZIP64:
+                    self.parsed_extra[extra.signature] = struct_detail(self.stream.read(extra.data_length), extra)
+                else:
+                    self.stream.seek(last_tell)
+                    self.parsed_extra[extra.signature] = struct_detail.parseStream(self.stream)
             else:
                 self.stream.seek(last_tell + extra.size() + extra.data_length)
             last_tell = self.stream.tell()
@@ -116,43 +127,49 @@ class ZipExtra:
     def pack(self):
         pass
 
+    def __repr__(self):
+        out = ['ZipExtra:']
+        for _, extra in self.parsed_extra.iteritems():
+            lines = extra.__repr__().split('\n')
+            out += [' ' * 4 + line for line in lines]
+
+        return '\n'.join(out)
+
 
 class ZipInfo(object):
-    def __init__(self, dir_header=None, stream=None, password=None):
-        self.is_encrypted = dir_header.general_purpose_bit_flag & 0x1
+    # Read from compressed files in 4k blocks.
+    MIN_READ_SIZE = 4096
+
+    def __init__(self, stream=None, dir_header=None, password=None):
         self.password = password
         self.dir_header = dir_header
         self.stream = stream
-        self._parseExtra()
+        self.is_encrypted = False
 
-    def _checkZip64Extra(self, zip64_extra):
-        # https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
-        # 4.5.3: If one of the size or
-        # offset fields in the Local or Central directory
-        # record is too small to hold the required data,
-        # a Zip64 extended information record is created.
-        # The order of the fields in the zip64 extended
-        # information record is fixed, but the fields MUST
-        # only appear if the corresponding Local or Central
-        # directory record field is set to 0xFFFF or 0xFFFFFFFF.
-        keys = ['csize', 'unsize', 'relative_offset_local_header']
-        checks = [0xFFFF, 0xFFFFFFFF]
-        for key in keys:
-            for c in checks:
-                if not getattr(zip64_extra, key) ^ c:
-                    return True
-        return False
+        self.extra = None
+        if self.dir_header:
+            self.is_encrypted = dir_header.general_purpose_bit_flag & 0x1
+            self._parseExtra()
 
     def _parseExtra(self):
         dir_header = self.dir_header
         self.extra = ZipExtra(dir_header.extra_field)
         # zip64
         zip64_extra = self.extra.getExtra(ZipExtra.ZIP64)
-        if zip64_extra and self._checkZip64Extra(zip64_extra):
-            dir_header.csize = zip64_extra.csize
-            dir_header.ucsize = zip64_extra.ucsize
-            dir_header.relative_offset_local_header = zip64_extra.relative_offset_local_header
+        if zip64_extra:
+            idx = 0
+            # ZIP64 extension (large files and/or large archives)
+            if dir_header.ucsize in (0xffffffffffffffffL, 0xffffffffL):
+                dir_header.ucsize = zip64_extra.counts[idx]
+                idx += 1
 
+            if dir_header.csize == 0xFFFFFFFFL:
+                dir_header.csize = zip64_extra.counts[idx]
+                idx += 1
+
+            if dir_header.relative_offset_file_header == 0xffffffffL:
+                dir_header.relative_offset_file_header = zip64_extra.counts[idx]
+                idx += 1
         # unicode path extra field
         upef_extra = self.extra.getExtra(ZipExtra.UPEF)
         if dir_header.general_purpose_bit_flag & 0x800:
@@ -170,18 +187,114 @@ class ZipInfo(object):
         else:
             raise AttributeError("attribute `{}` is not exist".format(key))
 
-    def read(self, password=None):
+    def write(self, filename, **kws):
+        '''
+        kws support:
+            comment
+            cryption
+            compression_method
+            zip64
+            password
+        '''
+        offset = self.stream.tell()
+        params = DictObject(kws)
+        if params.password:
+            self.password = params.password
+        self.is_encrypted = True if self.password else False
+
+        # set dir_header
+        # ===============================================================
+        st = os.stat(filename)
+        isdir = stat.S_ISDIR(st.st_mode)
+        mtime = time.localtime(st.st_mtime)
+        date_time = mtime[0:6]
+        dosdate = (date_time[0] - 1980) << 9 | date_time[1] << 5 | date_time[2]
+        dostime = date_time[3] << 11 | date_time[4] << 5 | (date_time[5] // 2)
+        # create file header
+        flags = 0x800  # unicode file
+
+        if self.password:
+            flags = flags | 0x1
+        if type(filename) == unicode:
+            filename = filename.encode('utf8')
+
+        packVals = DictObject({})
+        packVals.last_mod_dos_datetime = (dostime, dosdate)
+        packVals.general_purpose_bit_flag = flags
+        packVals.filename_length = len(filename)
+        packVals.filename = filename
+        packVals.compression_method = params.compression_method
+        packVals.file_comment = params.comment
+        packVals.file_comment_length = len(params.comment)
+        packVals.external_file_attributes = (st[0] & 0xFFFF) << 16L      # Unix attributes
+        packVals.internal_file_attributes = 0
+        compressed_data = ''
+
+        if isdir:
+            packVals.crc32 = 0
+            packVals.external_file_attributes |= 0x10
+        else:
+            fd = open(filename, "rb")
+            content = fd.read()
+            close(fd)
+
+            packVals.crc32 = zlib.crc32(content)
+
+            # compress
+            compressed_data = self._compress(content)
+            # encrypt
+            compressed_data = self._encrypt(compressed_data, self.password)
+            if params.zip64:
+                packVals.ucsize = packVals.csize = 0xFFFF
+            else:
+                packVals.ucsize = st.st_size
+                packVals.csize = len(compressed_data)
+
+        self.dir_header = struct_central_dir_header.pack(
+            version_made_by=(20, 0),
+            version_needed_to_extract=(20, 0),
+            extra_field_length='',
+            relative_offset_file_header='',
+            extra_field='',
+            **packVals.__dict__
+        )
+
+        # set self extras
+        # ===============================================================
+        extras = []
+        # extra AES
+        if self.password and params.cryption in ['AES_128', 'AES_192', 'AES_256']:
+            extras.append(struct_extra_aes(
+                data_length=7,
+                vendor_version='AE_1',
+                encrypt_strength=params.cryption,
+                compression_method=Compressor.ZIP_DEFLATED,
+            ))
+
+        # extra ZIP64
+        if params.zip64:
+            extras.append(struct_extra_zip64(
+                data_length=struct_extra_zip64.size(),
+                ucsize=packVals.ucsize,
+                csize=packVals.csize,
+                relative_offset_file_header=offset,
+            ))
+        self.extra = ZipExtra(extras=extras)
+
+    def read(self, size=None, password=None):
         stream = self.stream
-
-        stream.seek(self.dir_header.relative_offset_local_header, os.SEEK_SET)
+        stream.seek(self.dir_header.relative_offset_file_header, os.SEEK_SET)
         file_header = struct_local_file_header.parseStream(stream)
-        print file_header
-        size = self.dir_header.csize or file_header.csize
-        content = self._decompress(self._decrypt(size, password))
-        if not checkCRC(self.crc32, content):
-            raise BadZipfile('crc32 check failed')
+        csize = self.dir_header.csize or file_header.csize
+        if size is not None:
+            size = max(size, self.MIN_READ_SIZE)
 
-        return content
+        if size is None or size > csize:
+            content = self._decompress(self._decrypt(csize, password))
+            if not checkCRC(self.crc32, content):
+                raise BadZipfile('crc32 check failed')
+            return content
+        # TODO... read large file as stream
 
     def _decrypt(self, csize, password=None):
         if password == None:
@@ -218,8 +331,14 @@ class ZipInfo(object):
         else:
             return stream.read(csize)
 
-    def _encrypt(self, data):
-        pass
+    def _encrypt(self, data, password=None):
+        if password == None:
+            password = self.password
+
+        if password:
+            pass
+        else:
+            return data
 
     @property
     def compressor(self):
@@ -326,7 +445,7 @@ class ZipReader(object):
             stream.seek(offset, os.SEEK_SET)
             dir_header = struct_central_dir_header.parseStream(stream)
 
-            zinfo = ZipInfo(dir_header, stream, self.password)
+            zinfo = ZipInfo(stream, dir_header, self.password)
             self._fileInfos.append(zinfo)
             self._fileInfosDict[zinfo.filename] = zinfo
 
@@ -339,6 +458,15 @@ class ZipReader(object):
     def namelist(self):
         return [f.filename for f in self._fileInfos]
 
+    def getinfo(self, name):
+        """Return the instance of ZipInfo given 'name'."""
+        info = self._fileInfosDict.get(name)
+        if info is None:
+            raise KeyError(
+                'There is no item named %r in the archive' % name)
+
+        return info
+
     def __enter__(self):
         return self
 
@@ -349,6 +477,9 @@ class ZipReader(object):
         if isinstance(self.file, basestring):
             self.stream.close()
 
+    def open(self):
+        pass
+
     def read(self, item, password=None):
         if not password:
             password = self.password
@@ -358,4 +489,118 @@ class ZipReader(object):
                 raise IOError('file not found', item)
             item = self._fileInfosDict[item]
 
-        return item.read(password)
+        return item.read(password=password)
+
+
+class ZipWriter(object):
+
+    def __init__(self, file, **kws):
+        '''
+        kws supports:
+            password = bytes
+            cryption = 'ZIP', 'AES_128', 'AES_192', 'AES_256'
+            compression_method = 'ZIP_DEFLATED', 'ZIP_STORED'
+            zip64 = True | False
+            comment = bytes
+
+            fast
+            good
+        '''
+        self.file = file
+        if isinstance(file, basestring):
+            self.filename = file
+            self.stream = open(file, 'wb')
+        else:
+            self.filename = getattr(file, 'name')
+            self.stream = file
+
+        self._fileInfos = []
+        self.params = DictObject(kws)
+
+        self.password = None
+        self.cryption = None
+        self.compression_method = None
+        self.zip64 = None
+        self.comment = None
+
+    def writestr(self, filename, content):
+        pass
+
+    def write(self, filename, **kws):
+        '''
+        kws support
+            comment
+        '''
+
+        kws['compression_method'] = self.compression_method
+        kws['cryption'] = self.cryption
+        kws['zip64'] = self.zip64
+
+        zipInfo = ZipInfo(self.stream, password=self.password)
+        zipInfo.pack(filename, **kws)
+        # self._fileInfos.append(zipInfo)
+
+        st = os.stat(filename)
+        isdir = stat.S_ISDIR(st.st_mode)
+        mtime = time.localtime(st.st_mtime)
+        date_time = mtime[0:6]
+        # create file header
+        flags = 0x800  # unicode file
+        if self.password:
+            flags = flags ^ 0x1
+        if type(filename) == unicode:
+            filename = filename.encode('utf8')
+
+        dosdate = (date_time[0] - 1980) << 9 | date_time[1] << 5 | date_time[2]
+        dostime = date_time[3] << 11 | date_time[4] << 5 | (date_time[5] // 2)
+
+        dir_header = struct_central_dir_header.pack(
+            version_made_by='',
+            version_needed_to_extract='',
+            general_purpose_bit_flag='',
+            compression_method='',
+            last_mod_dos_datetime='',
+            crc32='',
+            csize='',
+            ucsize='',
+            filename_length=len(filename),
+            extra_field_length='',
+            file_comment_length='',
+            dist_index_file_start='',
+            internal_file_attributes='',
+            external_file_attributes='',
+            relative_offset_file_header='',
+            filename=filename,
+            extra_field='',
+            file_comment=''
+        )
+        # struct_local_file_header.pack(
+        #     version_needed_to_extract=(20, 0),
+        #     general_purpose_bit_flag=flags,
+        #     compression_method=self.compression_method,
+        #     last_mod_dos_datetime=(dostime, dosdate),
+        #     crc32='',
+        #     csize='',
+        #     ucsize=,
+        #     filename_length=,
+        #     extra_field_length=,
+        #     filename=,
+        #     extra_field=,
+        # )
+
+        # create file data
+
+        # create central dir header
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
+    def close(self):
+        if isinstance(self.file, basestring):
+            self.stream.close()
+    #     zipInfo = ZipInfo()
+    #     file_header, file_data, central_dir_header = zipInfo.write()

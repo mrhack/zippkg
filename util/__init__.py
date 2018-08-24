@@ -1,6 +1,6 @@
 
 
-class Params:
+class DictObject:
     '''
     add dict key to instance's attribute, value to value
     '''

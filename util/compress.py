@@ -43,6 +43,9 @@ class _DeflatedCompressor(_Com):
 
 
 class Compressor:
+    ZIP_STORE = _StoreCompressor.key
+    ZIP_DEFLATED = _DeflatedCompressor.key
+
     _dict_ = {
         _StoreCompressor.key: _StoreCompressor,
         _DeflatedCompressor.key: _DeflatedCompressor,

@@ -1,5 +1,5 @@
 import struct
-from . import Params
+from . import DictObject
 
 
 class FormatError(Exception):
@@ -22,17 +22,37 @@ class __Format(object):
     def validate(self, value):
         pass
 
+    def default(self):
+        pass
+
 
 class _IntFormat(__Format):
     def __init__(self, name, fmt, size, **kws):
         super(_IntFormat, self).__init__(name, fmt, size)
 
-        self.enum = {}
+        # k is str, v is int
+        self.k2v = kws
+        self.v2k = {}
         for k, v in kws.iteritems():
-            self.enum[v] = k
+            self.v2k[v] = k
+
+    def showValue(self, val):
+        if type(val) in [list, tuple] and len(val) == 1:
+            val = val[0]
+        if self.v2k:
+            sval = self.v2k.get(val)
+            if sval is None:
+                raise FormatError("enum value `{}` is not exist".format(val))
+            return sval
+        else:
+            return val
+        return self.v2k.get(val) if self.v2k else val
 
     def getValue(self, val):
-        return self.enum.get(val) if self.enum else val
+        if type(val) == str:
+            return self.k2v.get(val, 0)
+        else:
+            return val
 
     def validate(self, val):
         if self.size > 1:
@@ -40,10 +60,20 @@ class _IntFormat(__Format):
                 raise FormatError("`{}` must be a tuple or list".format(self.name))
             elif len(val) != self.size:
                 raise FormatError("`{}` got wrong size, size is {}".format(self.name, self.size))
+        elif type(val) is str and self.k2v:
+            if self.k2v.get(val) is None:
+                raise FormatError("`{}` do not match enum value `{}`".format(self.name, val))
+        elif type(val) is int and self.k2v:
+            if self.v2k.get(val) is None:
+                raise FormatError("enum value `{}` is not exist".format(val))
         elif type(val) is not int:
             raise FormatError("`{}` must be a number".format(self.name))
 
         return True
+
+    def default(self):
+        val = (0,) * self.size
+        return val[0] if self.size == 1 else val
 
 
 class Int8ul(_IntFormat):
@@ -67,15 +97,15 @@ class Int64ul(_IntFormat):
 
 
 class Bytes(__Format):
-    def __init__(self, name, field, fix=0):
+    def __init__(self, name, field):
         super(Bytes, self).__init__(name)
         self.field = None
         self.size = 0
+
         if type(field) == int:
             self.size = field
         else:
             self.field = field
-        self.fix = fix
 
     def validate(self, val):
         if type(val) != str:
@@ -84,6 +114,9 @@ class Bytes(__Format):
             raise FormatError("bytes `{}` got wrong size".format(self.name))
 
         return True
+
+    def default(self):
+        return '\x00' * self.size
 
 
 class Const(__Format):
@@ -99,6 +132,31 @@ class Const(__Format):
 
         return True
 
+    def default(self):
+        return self.value
+
+
+class ThisItem(object):
+    def __init__(self, name):
+        self.name = name
+        self.variable = 0
+
+    def __add__(self, other):
+        self.variable = other
+        return self
+
+    def __sub__(self, other):
+        self.variable = other
+        return self
+
+
+class This(object):
+    def __getattr__(self, key):
+        return ThisItem(key)
+
+
+this = This()
+
 
 class Container(object):
     def __init__(self, struct):
@@ -108,7 +166,7 @@ class Container(object):
     def size(self):
         size = 0
         for group in self.__struct__.fields_groups:
-            if group.type == _StructGroup.BYTES:
+            if group.type == _FormatGroup.BYTES:
                 for f in group.fields:
                     size += len(getattr(self, f.name))
             else:
@@ -116,25 +174,36 @@ class Container(object):
 
         return size
 
+    def __eq__(self, other):
+        for f in self.__fields__:
+            if getattr(self, f.name) != getattr(other, f.name):
+                return False
+
+        return True
+
     def __repr__(self):
         out = [str(self.__class__)[:-2].split('.')[-1] + ':']
         for f in self.__fields__:
             val = getattr(self, f.name)
-            if isinstance(val, str):
-                size = len(val)
-                if size > 100:
-                    val = val[:100] + '...'
-                val = 'b' + repr(val) + ' (total ' + str(size) + ')'
-            elif isinstance(val, unicode):
-                size = len(val)
-                if size > 100:
-                    val = val[:100] + '...'
-                val = repr(val) + ' (total ' + str(size) + ')'
+            if isinstance(f, Bytes) or isinstance(f, Const):
+                if isinstance(val, str):
+                    size = len(val)
+                    if size > 100:
+                        val = val[:100] + '...'
+                    val = 'b' + repr(val) + ' (total ' + str(size) + ')'
+                elif isinstance(val, unicode):
+                    size = len(val)
+                    if size > 100:
+                        val = val[:100] + '...'
+                    val = repr(val) + ' (total ' + str(size) + ')'
+            else:
+                if f.getValue(val) != val:
+                    val = '{}({})'.format(f.getValue(val), val)
             out.append('{}{} = {}'.format(' ' * 4, f.name, val))
         return "\n".join(out)
 
 
-class _StructGroup(object):
+class _FormatGroup(object):
     NORMAL = 0
     BYTES = 1
     CONST = 2
@@ -153,18 +222,18 @@ class _StructGroup(object):
         self.code = code
 
     def calcsize(self):
-        if self.type == _StructGroup.NORMAL:
+        if self.type == _FormatGroup.NORMAL:
             return struct.calcsize(self.code)
-        elif self.type == _StructGroup.BYTES:
+        elif self.type == _FormatGroup.BYTES:
             return 0
-        elif self.type == _StructGroup.CONST:
+        elif self.type == _FormatGroup.CONST:
             size = 0
             for f in self.fields:
                 size += len(f.value)
             return size
 
     def __repr__(self):
-        return '<_StructGroup type={}, code={}, fields={}>'.format(self.type, self.code, len(self.fields))
+        return '<_FormatGroup type={}, code={}, fields={}>'.format(self.type, self.code, len(self.fields))
 
 
 class Struct(object):
@@ -173,26 +242,26 @@ class Struct(object):
         self.fields = fields
         self.fields_groups = []
 
-        group = _StructGroup(_StructGroup.NORMAL)
+        group = _FormatGroup(_FormatGroup.NORMAL)
         for f in fields:
             if isinstance(f, Bytes):
-                if group.type != _StructGroup.BYTES:
+                if group.type != _FormatGroup.BYTES:
                     if group.fields:
                         group.calccode()
                         self.fields_groups.append(group)
-                    group = _StructGroup(_StructGroup.BYTES)
+                    group = _FormatGroup(_FormatGroup.BYTES)
             elif isinstance(f, Const):
-                if group.type != _StructGroup.CONST:
+                if group.type != _FormatGroup.CONST:
                     if group.fields:
                         group.calccode()
                         self.fields_groups.append(group)
-                    group = _StructGroup(_StructGroup.CONST)
+                    group = _FormatGroup(_FormatGroup.CONST)
             else:
-                if group.type != _StructGroup.NORMAL:
+                if group.type != _FormatGroup.NORMAL:
                     if group.fields:
                         group.calccode()
                         self.fields_groups.append(group)
-                    group = _StructGroup(_StructGroup.NORMAL)
+                    group = _FormatGroup(_FormatGroup.NORMAL)
             group.fields.append(f)
 
         if group.fields:
@@ -215,19 +284,20 @@ class Struct(object):
         index = 0
         for f in group.fields:
             val = values[index: index+f.size]
-            setattr(container, f.name, val if len(val) > 1 else f.getValue(val[0]))
+            setattr(container, f.name, f.showValue(val))
             index += f.size
 
     def _parseStreamBytes(self, stream, container, group):
         for f in group.fields:
             if f.field:
-                size = getattr(container, f.field, None)
+                size = getattr(container, f.field.name, None)
+                if size is None:
+                    raise FormatError("bytes `{}` need predefined field or size".format(f.name))
+                size += f.field.variable
             else:
                 size = f.size
-            if size is None:
-                raise FormatError("bytes `{}` need predefined field".format(f.name))
 
-            setattr(container, f.name, stream.read(size + f.fix))
+            setattr(container, f.name, stream.read(size))
 
     def _parseStreamConst(self, stream, container, group):
         for f in group.fields:
@@ -241,46 +311,40 @@ class Struct(object):
         container = Container(self)
 
         for group in self.fields_groups:
-            if group.type == _StructGroup.NORMAL:
+            if group.type == _FormatGroup.NORMAL:
                 self._parseStreamNormal(stream, container, group)
-            elif group.type == _StructGroup.BYTES:
+            elif group.type == _FormatGroup.BYTES:
                 self._parseStreamBytes(stream, container, group)
-            elif group.type == _StructGroup.CONST:
+            elif group.type == _FormatGroup.CONST:
                 self._parseStreamConst(stream, container, group)
-
         return container
 
     def __call__(self, **kws):
         container = Container(self)
         for f in self.fields:
+            val = kws.get(f.name)
+            val = f.default() if val is None else val
+            f.validate(val)
             if isinstance(f, Const):
-                if kws.get(f.name) is not None and f.name != f.value:
-                    raise FormatError("`{}` is const, got the wrong value".format(f.name))
-                setattr(container, f.name, f.value)
-            elif isinstance(f, Bytes):
-                val = kws.get(f.name)
-                val = '' if val is None else val
-                setattr(container, f.name, val)
-            else:
                 pass
-                # val = kws.get(f.name)
-                # for k, v in kws.iteritems():
-
-                # setattr(container, f.name, f.value)
-        pass
+            elif isinstance(f, Bytes):
+                if f.field and kws.get(f.field.name, 0) + f.field.variable != len(val):
+                    raise FormatError("bytes `{}` got the wrong size".format(f.name))
+            else:
+                val = f.showValue(val)
+            setattr(container, f.name, val)
+        return container
 
     def _packNormal(self, params, group):
         vals = []
         for f in group.fields:
             val = getattr(params, f.name)
-            if val:
-                f.validate(val)
-                if f.size > 1:
-                    vals += val
-                else:
-                    vals.append(val)
+            val = f.default() if val is None else val
+            f.validate(val)
+            if f.size > 1:
+                vals += val
             else:
-                vals.append(0)
+                vals.append(f.getValue(val))
 
         return struct.pack(group.code, *vals)
 
@@ -292,16 +356,17 @@ class Struct(object):
 
             # check size
             if f.field:
-                define_size = getattr(params, f.field)
+                define_size = getattr(params, f.field.name)
                 if define_size is None:
                     define_size = 0
+                define_size += f.field.variable
             else:
                 define_size = f.size
             if define_size is None:
                 raise FormatError("bytes `{}` need predefined field".format(f.name))
             elif getattr(params, f.name) is None and f.size > 0:
                 raise FormatError("bytes `{}` required".format(f.name))
-            elif define_size + f.fix != len(val):
+            elif define_size != len(val):
                 raise FormatError("bytes `{}` length is not correct".format(f.name))
 
             content += val
@@ -320,13 +385,13 @@ class Struct(object):
         return content
 
     def pack(self, **kws):
-        params = Params(kws)
+        params = DictObject(kws)
         content = ''
         for group in self.fields_groups:
-            if group.type == _StructGroup.NORMAL:
+            if group.type == _FormatGroup.NORMAL:
                 content += self._packNormal(params, group)
-            elif group.type == _StructGroup.BYTES:
+            elif group.type == _FormatGroup.BYTES:
                 content += self._packBytes(params, group)
-            elif group.type == _StructGroup.CONST:
+            elif group.type == _FormatGroup.CONST:
                 content += self._packConst(params, group)
         return content

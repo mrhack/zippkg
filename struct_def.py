@@ -26,7 +26,7 @@ struct_end_central_dir_record = Struct(
     Int32ul('size_central_dir'),
     Int32ul('offset_start_central_dir'),
     Int16ul('zipfile_comment_length'),
-    Bytes('zipfile_comment', 'zipfile_comment_length'),
+    Bytes('zipfile_comment', this.zipfile_comment_length),
 )
 
 struct_central_dir_header = Struct(
@@ -45,10 +45,10 @@ struct_central_dir_header = Struct(
     Int16ul("dist_index_file_start"),
     Int16ul("internal_file_attributes"),
     Int32ul("external_file_attributes"),
-    Int32ul("relative_offset_local_header"),
-    Bytes("filename", 'filename_length'),
-    Bytes("extra_field", 'extra_field_length'),
-    Bytes("file_comment", 'file_comment_length')
+    Int32ul("relative_offset_file_header"),
+    Bytes("filename", this.filename_length),
+    Bytes("extra_field", this.extra_field_length),
+    Bytes("file_comment", this.file_comment_length)
 )
 
 struct_local_file_header = Struct(
@@ -62,8 +62,8 @@ struct_local_file_header = Struct(
     Int32ul("ucsize"),  # uncompressed size
     Int16ul("filename_length"),
     Int16ul("extra_field_length"),
-    Bytes("filename", 'filename_length'),
-    Bytes("extra_field", 'extra_field_length')
+    Bytes("filename", this.filename_length),
+    Bytes("extra_field", this.extra_field_length)
 )
 
 struct_zip64_central_dir_locator = Struct(
@@ -84,7 +84,7 @@ struct_zip64_central_dir_record = Struct(
     Int64ul("total_entries_central_dir"),
     Int64ul('size_central_dir'),
     Int64ul('offset_start_central_dir'),
-    Bytes("extensible_data_sector", "data_length", -44)
+    Bytes("extensible_data_sector", this.data_length - 44)
     # zip64 extensible data sector (currently reserved for use by PKWARE)
 )
 
@@ -92,14 +92,14 @@ struct_extra_header = Struct(
     Bytes("signature", 2),
     Int16ul("data_length"),
 )
+
 # http://www.winzip.com/win/en/aes_info.htm#zip-format
 # AES extra data struct
-
 struct_extra_aes = Struct(
     Const("signature", Signature.EXTRA_AES),
     Int16ul("data_length"),
-    Int16ul("vendor_version"),
-    Int8ul("vender_id", size=2),
+    Int16ul("vendor_version", AE_1=1, AE_2=2),
+    Const("vender_id", 'AE'),
     Int8ul("encrypt_strength", AES_128=1, AES_192=2, AES_256=3),
     Int16ul("compression_method")
 )
@@ -110,14 +110,33 @@ struct_extra_upef = Struct(
     Int16ul("data_length"),
     Int8ul("version"),
     Int32ul("crc32"),
-    Bytes("unicode_name", 'data_length', -5)
+    Bytes("unicode_name", this.data_length - 5)
 )
 
-struct_extra_zip64 = Struct(
-    Const("signature", Signature.EXTRA_ZIP64),
-    Int16ul("data_length"),
-    Int64ul("ucsize"),
-    Int64ul("csize"),
-    Int64ul("relative_offset_local_header"),
-    Int32ul("disk_index"),
-)
+# struct_extra_zip64 = Struct(
+#     Const("signature", Signature.EXTRA_ZIP64),
+#     Int16ul("data_length"),
+#     Int64ul("ucsize"),
+#     Int64ul("csize"),
+#     Int64ul("relative_offset_file_header"),
+#     Int32ul("disk_index"),
+# )
+
+
+def parse_struct_extra_zip64(extra, pre_extra):
+    data_length = pre_extra.data_length
+    if data_length >= 26:
+        counts = struct.unpack('<QQQH', extra)
+    if data_length == 24:
+        counts = struct.unpack('<QQQH', extra)
+    elif data_length == 16:
+        counts = struct.unpack('<QQ', extra)
+    elif data_length == 8:
+        counts = struct.unpack('<Q', extra)
+    elif data_length == 0:
+        counts = ()
+    else:
+        raise RuntimeError, "Corrupt extra field %s" % (data_length,)
+
+    pre_extra.counts = counts
+    return pre_extra
