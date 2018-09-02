@@ -13,9 +13,13 @@ I got some problems when I use Python2.7 standard lib `zipfile`. Here are the re
 
 ## ZipReader and ZipWriter
 
-`ZipReader`: reader for zip file. It is supports zip64, zip standard encryption, AES encryption.
+`ZipReader`: reader for zip file. It is supports zip64, zip standard decryption, AES decryption.
 
-`ZipWriter`: writer for zip file. Supports zip standard encryption, AES encryption. TODO: zip64 
+`ZipWriter`: writer for zip file. Supports zip standard encryption, AES encryption. 
+
+
+## TODO
+ZipWriter support zip64
 
 ## Example
 
