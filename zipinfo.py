@@ -24,7 +24,7 @@ class ZipInfo(object):
         password=None,
         comment='',
         cryption=None,
-        compression_method=Compressor.AES_ENCRYPTED,
+        compression_method=Compressor.ZIP_DEFLATED,
         zip64=False
     )
     KWS_EXPECT = expect.ExpectDict({
@@ -113,14 +113,14 @@ class ZipInfo(object):
         # ===============================================================
         extras = []
         # extra AES
-        if self.password and self.cryption and self.cryption.startswith('AES'):
+        is_aes_cryption = self.password and self.cryption and self.cryption.startswith('AES')
+        if is_aes_cryption:
             extras.append(struct_extra_aes(
                 data_length=7,
                 vendor_version='AE_1',
                 encrypt_strength=self.cryption,
                 compression_method=self.compression_method,
             ))
-            self.compression_method = Compressor.AES_ENCRYPTED
 
         # extra ZIP64
         # if self.zip64:
@@ -152,7 +152,8 @@ class ZipInfo(object):
         packVals.filename_length = len(filename)
         packVals.filename = filename
         packVals.file_comment = self.comment
-        packVals.compression_method = self.compression_method
+
+        packVals.compression_method = Compressor.AES_ENCRYPTED if is_aes_cryption else self.compression_method
         packVals.file_comment_length = len(self.comment)
         # packVals.external_file_attributes = (st[0] & 0xFFFF) << 16L      # Unix attributes
         packVals.internal_file_attributes = 0
@@ -272,12 +273,7 @@ class ZipInfo(object):
 
     @property
     def compressor(self):
-        if self.is_encrypted and self.extra.getExtra(ZipExtra.AES):
-            compression_method = self.extra.getExtra(ZipExtra.AES).compression_method
-        else:
-            compression_method = self.compression_method
-        # set compressor
-        return Compressor(compression_method)
+        return Compressor(self.compression_method)
 
     def _compress(self, data):
         return self.compressor.compress(data)

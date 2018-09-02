@@ -44,7 +44,11 @@ def test_zipreader_crypt():
 
 
 def test_zipwriter():
-    with ZipWriter('zipname.zip', password="111", cryption="ZIP") as zipwriter:
+    with ZipWriter('zipname.zip', password="111", cryption="AES_256") as zipwriter:
         zipwriter.write('test.py')
 
         zipwriter.writestr('test/a/a.log', 'kwkw')
+
+    with ZipReader('zipname.zip', password="111") as zipreader:
+        for name in zipreader.namelist():
+            print name, len(zipreader.read(name))
