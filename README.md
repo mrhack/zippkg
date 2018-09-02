@@ -15,16 +15,22 @@ I got some problems when I use Python2.7 standard lib `zipfile`. Here are the re
 
 `ZipReader`: reader for zip file. It is supports zip64, zip standard encryption, AES encryption.
 
-`ZipWriter`: writer for zip file. It will implement future.
+`ZipWriter`: writer for zip file. Supports zip standard encryption, AES encryption. TODO: zip64 
 
 ## Example
 
 ```python
-from zippkg import ZipReader
+from zippkg import ZipReader, ZipWriter
 
+# example for zipreader
 with ZipReader("test.zip") as zipreader:
     for name in zipreader.namelist():
         print name
+
+# example for zipwriter
+with ZipWriter("test.zip", password="pwd") as zipwriter:
+    zipwriter.writestr("file.txt", "content")
+    zipwriter.write("file1.txt")
 ```
 
 
