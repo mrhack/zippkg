@@ -16,9 +16,6 @@ class __Format(object):
             self.fmt = None
         self.value = None
 
-    def __repr__(self):
-        return '{}{}: {}'.format(' '*4, self.name, self.value)
-
     def validate(self, value):
         pass
 
@@ -36,17 +33,28 @@ class _IntFormat(__Format):
         for k, v in kws.iteritems():
             self.v2k[v] = k
 
+    def format_value(self, val):
+        value = val
+        desc = None
+        if type(val) is str and self.k2v:
+            value = self.k2v.get(val)
+            desc = val
+            if value is None:
+                raise FormatError("`{}` do not match enum value `{}`".format(self.name, val))
+        elif type(val) is int and self.v2k:
+            value = val
+            desc = self.v2k.get(val)
+            if desc is None:
+                raise FormatError("enum value `{}` is not exist".format(val))
+
+        return value, desc
+
     def showValue(self, val):
         if type(val) in [list, tuple] and len(val) == 1:
             val = val[0]
-        if self.v2k:
-            sval = self.v2k.get(val)
-            if sval is None:
-                raise FormatError("enum value `{}` is not exist".format(val))
-            return sval
-        else:
-            return val
-        return self.v2k.get(val) if self.v2k else val
+
+        val, desc = self.format_value(val)
+        return desc if desc else val
 
     def getValue(self, val):
         if type(val) == str:
@@ -63,7 +71,7 @@ class _IntFormat(__Format):
         elif type(val) is str and self.k2v:
             if self.k2v.get(val) is None:
                 raise FormatError("`{}` do not match enum value `{}`".format(self.name, val))
-        elif type(val) is int and self.k2v:
+        elif type(val) is int and self.v2k:
             if self.v2k.get(val) is None:
                 raise FormatError("enum value `{}` is not exist".format(val))
         elif type(val) is not int:
@@ -174,11 +182,16 @@ class Container(object):
 
         return size
 
+    def pack(self):
+        content = ''
+        for group in self.__struct__.fields_groups:
+            content += group.pack(self)
+        return content
+
     def __eq__(self, other):
         for f in self.__fields__:
             if getattr(self, f.name) != getattr(other, f.name):
                 return False
-
         return True
 
     def __repr__(self):
@@ -232,6 +245,103 @@ class _FormatGroup(object):
                 size += len(f.value)
             return size
 
+    def _parseStreamNormal(self, stream, container):
+        size = struct.calcsize(self.code)
+        byte = stream.read(size)
+        if len(byte) != size:
+            raise FormatError("unpack requires a string argument of length {}".format(size))
+        values = struct.unpack(self.code, byte)
+        index = 0
+        for f in self.fields:
+            val = values[index: index+f.size]
+            setattr(container, f.name, f.showValue(val))
+            index += f.size
+
+    def _parseStreamBytes(self, stream, container):
+        for f in self.fields:
+            if f.field:
+                size = getattr(container, f.field.name, None)
+                if size is None:
+                    raise FormatError("bytes `{}` need predefined field or size".format(f.name))
+                size += f.field.variable
+            else:
+                size = f.size
+
+            setattr(container, f.name, stream.read(size))
+
+    def _parseStreamConst(self, stream, container):
+        for f in self.fields:
+            size = len(f.value)
+            value = stream.read(size)
+            if value != f.value:
+                raise FormatError("const required `{}`, but got `{}`".format(repr(f.value), repr(value)))
+            setattr(container, f.name, f.value)
+
+    def parseStream(self, stream, container):
+        if self.type == _FormatGroup.NORMAL:
+            self._parseStreamNormal(stream, container)
+        elif self.type == _FormatGroup.BYTES:
+            self._parseStreamBytes(stream, container)
+        elif self.type == _FormatGroup.CONST:
+            self._parseStreamConst(stream, container)
+
+    def _packNormal(self, params):
+        vals = []
+        for f in self.fields:
+            val = getattr(params, f.name)
+            val = f.default() if val is None else val
+            f.validate(val)
+            if f.size > 1:
+                vals += val
+            else:
+                vals.append(f.getValue(val))
+
+        return struct.pack(self.code, *vals)
+
+    def _packBytes(self, params):
+        content = ''
+        for f in self.fields:
+            val = getattr(params, f.name) or ''
+            f.validate(val)
+
+            # check size
+            if f.field:
+                define_size = getattr(params, f.field.name)
+                if define_size is None:
+                    define_size = 0
+                define_size += f.field.variable
+            else:
+                define_size = f.size
+            if define_size is None:
+                raise FormatError("bytes `{}` need predefined field".format(f.name))
+            elif getattr(params, f.name) is None and f.size > 0:
+                raise FormatError("bytes `{}` required".format(f.name))
+            elif define_size != len(val):
+                raise FormatError("bytes `{}` length is not correct".format(f.name))
+
+            content += val
+        return content
+
+    def _packConst(self, params):
+        content = ''
+        for f in self.fields:
+            val = getattr(params, f.name)
+            if val is not None:
+                f.validate(val)
+
+            if val and val != f.value:
+                raise FormatError("const `{}` got wrong value".format(f.name))
+            content += f.value
+        return content
+
+    def pack(self, params):
+        if self.type == _FormatGroup.NORMAL:
+            return self._packNormal(params)
+        elif self.type == _FormatGroup.BYTES:
+            return self._packBytes(params)
+        elif self.type == _FormatGroup.CONST:
+            return self._packConst(params)
+
     def __repr__(self):
         return '<_FormatGroup type={}, code={}, fields={}>'.format(self.type, self.code, len(self.fields))
 
@@ -275,48 +385,10 @@ class Struct(object):
 
         return size
 
-    def _parseStreamNormal(self, stream, container, group):
-        size = struct.calcsize(group.code)
-        byte = stream.read(size)
-        if len(byte) != size:
-            raise FormatError("unpack requires a string argument of length {}".format(size))
-        values = struct.unpack(group.code, byte)
-        index = 0
-        for f in group.fields:
-            val = values[index: index+f.size]
-            setattr(container, f.name, f.showValue(val))
-            index += f.size
-
-    def _parseStreamBytes(self, stream, container, group):
-        for f in group.fields:
-            if f.field:
-                size = getattr(container, f.field.name, None)
-                if size is None:
-                    raise FormatError("bytes `{}` need predefined field or size".format(f.name))
-                size += f.field.variable
-            else:
-                size = f.size
-
-            setattr(container, f.name, stream.read(size))
-
-    def _parseStreamConst(self, stream, container, group):
-        for f in group.fields:
-            size = len(f.value)
-            value = stream.read(size)
-            if value != f.value:
-                raise FormatError("const required `{}`, but got `{}`".format(repr(f.value), repr(value)))
-            setattr(container, f.name, f.value)
-
     def parseStream(self, stream):
         container = Container(self)
-
         for group in self.fields_groups:
-            if group.type == _FormatGroup.NORMAL:
-                self._parseStreamNormal(stream, container, group)
-            elif group.type == _FormatGroup.BYTES:
-                self._parseStreamBytes(stream, container, group)
-            elif group.type == _FormatGroup.CONST:
-                self._parseStreamConst(stream, container, group)
+            group.parseStream(stream, container)
         return container
 
     def __call__(self, **kws):
@@ -335,63 +407,9 @@ class Struct(object):
             setattr(container, f.name, val)
         return container
 
-    def _packNormal(self, params, group):
-        vals = []
-        for f in group.fields:
-            val = getattr(params, f.name)
-            val = f.default() if val is None else val
-            f.validate(val)
-            if f.size > 1:
-                vals += val
-            else:
-                vals.append(f.getValue(val))
-
-        return struct.pack(group.code, *vals)
-
-    def _packBytes(self, params, group):
-        content = ''
-        for f in group.fields:
-            val = getattr(params, f.name) or ''
-            f.validate(val)
-
-            # check size
-            if f.field:
-                define_size = getattr(params, f.field.name)
-                if define_size is None:
-                    define_size = 0
-                define_size += f.field.variable
-            else:
-                define_size = f.size
-            if define_size is None:
-                raise FormatError("bytes `{}` need predefined field".format(f.name))
-            elif getattr(params, f.name) is None and f.size > 0:
-                raise FormatError("bytes `{}` required".format(f.name))
-            elif define_size != len(val):
-                raise FormatError("bytes `{}` length is not correct".format(f.name))
-
-            content += val
-        return content
-
-    def _packConst(self, params, group):
-        content = ''
-        for f in group.fields:
-            val = getattr(params, f.name)
-            if val is not None:
-                f.validate(val)
-
-            if val and val != f.value:
-                raise FormatError("const `{}` got wrong value".format(f.name))
-            content += f.value
-        return content
-
     def pack(self, **kws):
         params = DictObject(kws)
         content = ''
         for group in self.fields_groups:
-            if group.type == _FormatGroup.NORMAL:
-                content += self._packNormal(params, group)
-            elif group.type == _FormatGroup.BYTES:
-                content += self._packBytes(params, group)
-            elif group.type == _FormatGroup.CONST:
-                content += self._packConst(params, group)
+            content += group.pack(params)
         return content

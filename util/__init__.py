@@ -1,4 +1,7 @@
 
+class BadZipfile(Exception):
+    pass
+
 
 class DictObject:
     '''

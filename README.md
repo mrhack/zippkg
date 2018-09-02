@@ -31,4 +31,5 @@ with ZipReader("test.zip") as zipreader:
 ## links
 
 [http://www.winzip.com/win/en/aes_info.htm](http://www.winzip.com/win/en/aes_info.htm)  
-[https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
+[https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)  
+[https://opensource.apple.com/source/zip/zip-6/unzip/unzip/proginfo/extra.fld](https://opensource.apple.com/source/zip/zip-6/unzip/unzip/proginfo/extra.fld)

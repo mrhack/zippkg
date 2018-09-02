@@ -34,9 +34,11 @@ class _DeflatedCompressor(_Com):
 
     def __init__(self):
         super(_DeflatedCompressor, self).__init__()
+        self.cmpr = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION,
+                                     zlib.DEFLATED, -15)
 
     def compress(self, content):
-        return zlib.compress(content, -15)
+        return self.cmpr.compress(content) + self.cmpr.flush()
 
     def decompress(self, content):
         return zlib.decompress(content, -15)
@@ -45,6 +47,7 @@ class _DeflatedCompressor(_Com):
 class Compressor:
     ZIP_STORE = _StoreCompressor.key
     ZIP_DEFLATED = _DeflatedCompressor.key
+    AES_ENCRYPTED = 99
 
     _dict_ = {
         _StoreCompressor.key: _StoreCompressor,

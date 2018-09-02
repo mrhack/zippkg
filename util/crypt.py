@@ -1,3 +1,4 @@
+import random
 
 from Crypto.Cipher import AES
 from Crypto.Hash import HMAC, SHA
@@ -13,7 +14,23 @@ class BadPassword(Exception):
     pass
 
 
+def random_salt(length):
+    salt = ''
+    for i in range(length):
+        salt += chr(int(random.random() * 255))
+    return salt
+
+
+class CryptTypes:
+    ZIP = 'ZIP'
+    AES_128 = 'AES_128'
+    AES_192 = 'AES_192'
+    AES_256 = 'AES_256'
+
+
 class Crypt(object):
+    types = [CryptTypes.ZIP, CryptTypes.AES_128, CryptTypes.AES_192, CryptTypes.AES_256]
+
     def __init__(self, password):
         self.password = password
 
@@ -39,13 +56,23 @@ class AESCrypt(Crypt):
     def __init__(self, password):
         super(AESCrypt, self).__init__(password)
 
-    def encrypt(self, contents, **kws):
-        pass
+    def encrypt(self, contents, encrypt_strength):
+        salt_len, key_len = self.encryption_params[encrypt_strength]
+        salt = random_salt(salt_len)
+        keys = PBKDF2(self.password, salt, dkLen=key_len * 2 + self.PASSWD_VERIF_LEN, count=self.PBKDF2_ITER)
+        password_verification_value = keys[-2:]
 
-    def decrypt(self, contents, extra, password=None):
-        password = password if password else self.password
+        aes_key, hmac_key = keys[:key_len], keys[key_len:key_len + key_len]
 
-        encrypt_strength = extra.encrypt_strength
+        ctr = Counter.new(nbits=self.NUM_COUNTER_BITS, initial_value=1, little_endian=True)
+        encrypted_data = AES.new(aes_key, AES.MODE_CTR, counter=ctr).encrypt(contents)
+
+        myhmac = HMAC.new(hmac_key, encrypted_data, SHA).digest()
+        authentication_code = myhmac[:10]
+
+        return salt + password_verification_value + encrypted_data + authentication_code
+
+    def decrypt(self, contents, encrypt_strength):
 
         salt_len, key_len = self.encryption_params[encrypt_strength]
         salt = contents[:salt_len]
@@ -57,7 +84,7 @@ class AESCrypt(Crypt):
         authentication_code = contents[tell+compressed_file_size:]
 
         # If prf is not specified, PBKDF2 uses HMAC-SHA1
-        keys = PBKDF2(password, salt, dkLen=key_len * 2 + self.PASSWD_VERIF_LEN, count=self.PBKDF2_ITER)
+        keys = PBKDF2(self.password, salt, dkLen=key_len * 2 + self.PASSWD_VERIF_LEN, count=self.PBKDF2_ITER)
         if keys[-2:] != password_verification_value:
             raise BadPassword("Bad password")
 
@@ -123,7 +150,15 @@ class PKWARECrypt(Crypt):
         self.key2 = self._crc32(chr((self.key1 >> 24) & 255), self.key2)
 
     def encrypt(self, contents):
-        pass
+        data = []
+        for c in contents:
+            k = (self.key2 & 0xffff) | 2
+            k = ((k * (k ^ 1)) >> 8) & 255
+            self._updateKeys(c)
+            c = k ^ ord(c)
+            data.append(chr(c))
+
+        return "".join(data)
 
     def decrypt(self, contents):
         data = []
