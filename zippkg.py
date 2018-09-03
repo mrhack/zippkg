@@ -15,7 +15,7 @@ from zipinfo import ZipInfo
 
 from struct_def import *
 
-ZIP64_FILESIZE_LIMIT = (1 << 31) - 1
+
 ZIP_FILECOUNT_LIMIT = (1 << 16) - 1
 ZIP_MAX_COMMENT = (1 << 16) - 1
 
@@ -73,7 +73,7 @@ class ZipReader(object):
         zip64_locator_size = struct_zip64_central_dir_locator.size()
         self.stream.seek(-self.end_central_dir.size() - zip64_locator_size, os.SEEK_END)
         zip64_locator = struct_zip64_central_dir_locator.parseStream(self.stream)
-        if zip64_locator.disk_index_width_zip64_central_dir_record != 0 and zip64_locator.disk_total != 1:
+        if zip64_locator.disk_index_with_zip64_central_dir_record != 0 and zip64_locator.disk_total != 1:
             raise BadZipfile("zipfiles that span multiple disks are not supported")
         # parse zip64 directory record
 
@@ -162,14 +162,12 @@ class ZipWriter(object):
         password=None,
         cryption=None,
         compression_method=Compressor.ZIP_DEFLATED,
-        zip64=False,
         comment=''
     )
     KWS_EXPECT = expect.ExpectDict({
         'password': expect.ExpectStr(noneable=True),
         'cryption': expect.ExpectStr(enum=Crypt.types, noneable=True),
         'compression_method': expect.ExpectInt(),
-        'zip64': expect.ExpectBool(),
         'comment': expect.ExpectStr(noneable=True),
     }, strict=True)
 
@@ -193,6 +191,7 @@ class ZipWriter(object):
 
         self._fileInfos = []
         self._fileInfosDict = {}
+        self.is_zip64 = False
 
         # expect
         default = self.KWS_DEFAULT.copy()
@@ -208,8 +207,7 @@ class ZipWriter(object):
                           password=self.password,
                           comment=comment,
                           cryption=self.cryption,
-                          compression_method=self.compression_method,
-                          zip64=self.zip64)
+                          compression_method=self.compression_method)
 
         if date_time is None:
             date_time = time.localtime(time.time())[:6]
@@ -241,17 +239,41 @@ class ZipWriter(object):
         self.close()
 
     def close(self):
+        if len(self._fileInfos) > ZIP_FILECOUNT_LIMIT:
+            self.is_zip64 = True
         # write central directory header
         central_directory_header_offset = self.stream.tell()
         for zipinfo in self._fileInfos:
             self.stream.write(zipinfo.dir_header.pack())
+            if zipinfo.is_zip64:
+                self.is_zip64 = True
+        size_central_dir = self.stream.tell() - central_directory_header_offset
+        if self.is_zip64:
+            # zip64 end of central directory record
+            offset_zip64_central_dir_record = self.stream.tell()
+            self.stream.write(struct_zip64_central_dir_record(
+                data_length=44,
+                version_made_by=(20, 3),
+                version_needed_to_extract=(20, 0),
+                disk_index=0,
+                disk_index_with_start_central_dir=0,
+                total_entries_central_dir_disk=len(self._fileInfos),
+                total_entries_central_dir=len(self._fileInfos),
+                size_central_dir=size_central_dir,
+                offset_start_central_dir=central_directory_header_offset,
+            ).pack())
+            # zip64 end of central directory locator
+            self.stream.write(struct_zip64_central_dir_locator(
+                offset_zip64_central_dir_record=offset_zip64_central_dir_record,
+                disk_total=1,
+            ).pack())
 
         # write end of central directory record
         self.end_central_dir = struct_end_central_dir_record(
-            total_entries_central_dir_disk=len(self._fileInfos),
-            total_entries_central_dir=len(self._fileInfos),
-            size_central_dir=self.stream.tell() - central_directory_header_offset,
-            offset_start_central_dir=central_directory_header_offset,
+            total_entries_central_dir_disk=0xFFFF if self.is_zip64 else len(self._fileInfos),
+            total_entries_central_dir=0xFFFF if self.is_zip64 else len(self._fileInfos),
+            size_central_dir=0xFFFFFFFF if self.is_zip64 else size_central_dir,
+            offset_start_central_dir=0xFFFFFFFF if self.is_zip64 else central_directory_header_offset,
             zipfile_comment_length=len(self.comment),
             zipfile_comment=self.comment
         )

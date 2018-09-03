@@ -23,9 +23,11 @@ class __Format(object):
         pass
 
 
-class _IntFormat(__Format):
+class _NumFormat(__Format):
+    types = [int]
+
     def __init__(self, name, fmt, size, **kws):
-        super(_IntFormat, self).__init__(name, fmt, size)
+        super(_NumFormat, self).__init__(name, fmt, size)
 
         # k is str, v is int
         self.k2v = kws
@@ -74,7 +76,7 @@ class _IntFormat(__Format):
         elif type(val) is int and self.v2k:
             if self.v2k.get(val) is None:
                 raise FormatError("enum value `{}` is not exist".format(val))
-        elif type(val) is not int:
+        elif type(val) not in self.types:
             raise FormatError("`{}` must be a number".format(self.name))
 
         return True
@@ -84,22 +86,24 @@ class _IntFormat(__Format):
         return val[0] if self.size == 1 else val
 
 
-class Int8ul(_IntFormat):
+class Int8ul(_NumFormat):
     def __init__(self, name, size=1, **kws):
         super(Int8ul, self).__init__(name, 'B', size, **kws)
 
 
-class Int16ul(_IntFormat):
+class Int16ul(_NumFormat):
     def __init__(self, name, size=1, **kws):
         super(Int16ul, self).__init__(name, 'H', size, **kws)
 
 
-class Int32ul(_IntFormat):
+class Int32ul(_NumFormat):
     def __init__(self, name, size=1, **kws):
         super(Int32ul, self).__init__(name, 'L', size, **kws)
 
 
-class Int64ul(_IntFormat):
+class Int64ul(_NumFormat):
+    types = [int, long]
+
     def __init__(self, name, size=1, **kws):
         super(Int64ul, self).__init__(name, 'Q', size, **kws)
 
@@ -154,7 +158,7 @@ class ThisItem(object):
         return self
 
     def __sub__(self, other):
-        self.variable = other
+        self.variable = -other
         return self
 
 
@@ -238,7 +242,10 @@ class _FormatGroup(object):
         if self.type == _FormatGroup.NORMAL:
             return struct.calcsize(self.code)
         elif self.type == _FormatGroup.BYTES:
-            return 0
+            size = 0
+            for f in self.fields:
+                size += f.size
+            return size
         elif self.type == _FormatGroup.CONST:
             size = 0
             for f in self.fields:

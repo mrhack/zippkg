@@ -9,6 +9,8 @@ from struct_def import *
 from util.compress import Compressor
 from zipextra import ZipExtra
 
+ZIP64_FILESIZE_LIMIT = (1 << 31) - 1
+
 
 def checkCRC(crc32, content):
     if crc32 != 0 and crc32 != (zlib.crc32(content) & 0xffffffff):
@@ -24,14 +26,12 @@ class ZipInfo(object):
         password=None,
         comment='',
         cryption=None,
-        compression_method=Compressor.ZIP_DEFLATED,
-        zip64=False
+        compression_method=Compressor.ZIP_DEFLATED
     )
     KWS_EXPECT = expect.ExpectDict({
         'password': expect.ExpectStr(noneable=True),
         'cryption': expect.ExpectStr(enum=crypt.Crypt.types, noneable=True),
         'compression_method': expect.ExpectInt(),
-        'zip64': expect.ExpectBool(),
         'comment': expect.ExpectStr(noneable=True),
     }, strict=True)
 
@@ -42,7 +42,6 @@ class ZipInfo(object):
             comment='',
             cryption=None,
             compression_method=Compressor.AES_ENCRYPTED,
-            zip64=False
         '''
         self.stream = stream
         self.is_encrypted = False
@@ -60,7 +59,7 @@ class ZipInfo(object):
         self._parseExtra()
 
         self.compression_method = self.dir_header.compression_method
-        self.zip64 = self.extra.getExtra(ZipExtra.ZIP64) is not None
+        self.is_zip64 = self.extra.getExtra(ZipExtra.ZIP64) is not None
         self.comment = self.dir_header.file_comment
 
         if self.is_encrypted:
@@ -73,22 +72,24 @@ class ZipInfo(object):
 
     def _parseExtra(self):
         dir_header = self.dir_header
+
         self.extra = ZipExtra(dir_header.extra_field)
         # zip64
         zip64_extra = self.extra.getExtra(ZipExtra.ZIP64)
         if zip64_extra:
             idx = 0
             # ZIP64 extension (large files and/or large archives)
-            if dir_header.ucsize in (0xffffffffffffffffL, 0xffffffffL):
-                dir_header.ucsize = zip64_extra.counts[idx]
+            counts = unpack_zip64_data(zip64_extra.data)
+            if dir_header.ucsize == 0xFFFFFFFFL:
+                dir_header.ucsize = counts[idx]
                 idx += 1
 
             if dir_header.csize == 0xFFFFFFFFL:
-                dir_header.csize = zip64_extra.counts[idx]
+                dir_header.csize = counts[idx]
                 idx += 1
 
-            if dir_header.relative_offset_file_header == 0xffffffffL:
-                dir_header.relative_offset_file_header = zip64_extra.counts[idx]
+            if dir_header.relative_offset_file_header == 0xFFFFFFFFL:
+                dir_header.relative_offset_file_header = counts[idx]
                 idx += 1
         # unicode path extra field
         upef_extra = self.extra.getExtra(ZipExtra.UPEF)
@@ -109,28 +110,8 @@ class ZipInfo(object):
 
     def write(self, filename, content='', isdir=False, date_time=(1980, 1, 1, 0, 0, 0)):
         self.is_encrypted = True if self.password else False
-        # set self extras
-        # ===============================================================
-        extras = []
         # extra AES
         is_aes_cryption = self.password and self.cryption and self.cryption.startswith('AES')
-        if is_aes_cryption:
-            extras.append(struct_extra_aes(
-                data_length=7,
-                vendor_version='AE_1',
-                encrypt_strength=self.cryption,
-                compression_method=self.compression_method,
-            ))
-
-        # extra ZIP64
-        # if self.zip64:
-        #     extras.append(struct_extra_zip64(
-        #         data_length=struct_extra_zip64.size(),
-        #         ucsize=packVals.ucsize,
-        #         csize=packVals.csize,
-        #         relative_offset_file_header=offset,
-        #     ))
-        self.extra = ZipExtra(reduce(lambda x, y: x+y, [_e.pack() for _e in extras], ''))
 
         # set dir_header
         # ===============================================================
@@ -170,18 +151,44 @@ class ZipInfo(object):
             # encrypt
             if self.password:
                 compressed_data = self._encrypt(compressed_data, crc32=packVals.crc32)
-            if self.zip64:
-                packVals.ucsize = packVals.csize = 0xFFFF
-            else:
-                packVals.ucsize = len(content)
-                packVals.csize = len(compressed_data)
+
+            packVals.ucsize = len(content)
+            packVals.csize = len(compressed_data)
+
+        packVals.relative_offset_file_header = self.stream.tell()
+
+        # add zip64 fields
+        zip64_fields = []
+        for key in ['ucsize', 'csize', 'relative_offset_file_header']:
+            if getattr(packVals, key) > ZIP64_FILESIZE_LIMIT:
+                zip64_fields.append(getattr(packVals, key))
+                setattr(packVals, key, 0xFFFFFFFF)
+        self.is_zip64 = bool(zip64_fields)
+        # set self extras
+        # ===============================================================
+        extras = []
+        if is_aes_cryption:
+            extras.append(struct_extra_aes(
+                data_length=7,
+                vendor_version='AE_1',
+                encrypt_strength=self.cryption,
+                compression_method=self.compression_method,
+            ))
+
+        # extra ZIP64
+        if self.is_zip64:
+            extras.append(struct_extra_zip64(
+                data_length=len(zip64_fields) * 8,
+                data=pack_zip64_data(zip64_fields)
+            ))
+
+        self.extra = ZipExtra(reduce(lambda x, y: x+y, [_e.pack() for _e in extras], ''))
 
         extra_field = self.extra.pack()
         self.dir_header = struct_central_dir_header(
             version_made_by=(20, 3),
             version_needed_to_extract=(20, 0),
             extra_field_length=len(extra_field),
-            relative_offset_file_header=self.stream.tell(),
             extra_field=extra_field,
             **packVals.__dict__
         )
@@ -293,10 +300,10 @@ class ZipExtra:
         return {
             self.AES: struct_extra_aes,
             self.UPEF: struct_extra_upef,
-            self.ZIP64: parse_struct_extra_zip64,
+            self.ZIP64: struct_extra_zip64,
         }
 
-    def __init__(self, bytes=None):
+    def __init__(self, bytes):
         self.parsed_extra = {}
         self.all_extra = {}
 
@@ -312,11 +319,8 @@ class ZipExtra:
             self.all_extra[extra.signature] = extra
             struct_detail = self.structs.get(extra.signature)
             if struct_detail:
-                if extra.signature == Signature.EXTRA_ZIP64:
-                    self.parsed_extra[extra.signature] = struct_detail(self.stream.read(extra.data_length), extra)
-                else:
-                    self.stream.seek(last_tell)
-                    self.parsed_extra[extra.signature] = struct_detail.parseStream(self.stream)
+                self.stream.seek(last_tell)
+                self.parsed_extra[extra.signature] = struct_detail.parseStream(self.stream)
             else:
                 self.stream.seek(last_tell + extra.size() + extra.data_length)
             last_tell = self.stream.tell()

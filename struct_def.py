@@ -20,7 +20,7 @@ class Signature:
 struct_end_central_dir_record = Struct(
     Const('signature', Signature.CENTRAL_RECORD),
     Int16ul('disk_index'),
-    Int16ul('disk_index_width_start_central_dir'),
+    Int16ul('disk_index_with_start_central_dir'),
     Int16ul('total_entries_central_dir_disk'),
     Int16ul('total_entries_central_dir'),
     Int32ul('size_central_dir'),
@@ -68,7 +68,7 @@ struct_local_file_header = Struct(
 
 struct_zip64_central_dir_locator = Struct(
     Const("signature", Signature.ZIP64_LOCATOR),
-    Int32ul("disk_index_width_zip64_central_dir_record"),
+    Int32ul("disk_index_with_zip64_central_dir_record"),
     Int64ul("offset_zip64_central_dir_record"),
     Int32ul("disk_total"),
 )
@@ -79,7 +79,7 @@ struct_zip64_central_dir_record = Struct(
     Int8ul("version_made_by", size=2),
     Int8ul("version_needed_to_extract", size=2),
     Int32ul("disk_index"),
-    Int32ul("disk_index_width_start_central_dir"),
+    Int32ul("disk_index_with_start_central_dir"),
     Int64ul("total_entries_central_dir_disk"),
     Int64ul("total_entries_central_dir"),
     Int64ul('size_central_dir'),
@@ -113,30 +113,42 @@ struct_extra_upef = Struct(
     Bytes("unicode_name", this.data_length - 5)
 )
 
-# struct_extra_zip64 = Struct(
-#     Const("signature", Signature.EXTRA_ZIP64),
-#     Int16ul("data_length"),
-#     Int64ul("ucsize"),
-#     Int64ul("csize"),
-#     Int64ul("relative_offset_file_header"),
-#     Int32ul("disk_index"),
-# )
+struct_extra_zip64 = Struct(
+    Const("signature", Signature.EXTRA_ZIP64),
+    Int16ul("data_length"),
+    Bytes('data', this.data_length),
+    # Int64ul("ucsize"),
+    # Int64ul("csize"),
+    # Int64ul("relative_offset_file_header"),
+    # Int32ul("disk_index"),
+)
 
 
-def parse_struct_extra_zip64(extra, pre_extra):
-    data_length = pre_extra.data_length
-    if data_length >= 26:
-        counts = struct.unpack('<QQQH', extra)
-    if data_length == 24:
-        counts = struct.unpack('<QQQH', extra)
+def pack_zip64_data(vals):
+    packs = {
+        1: '<Q',
+        2: '<QQ',
+        3: '<QQQ',
+        4: '<QQQL',
+    }
+    if len(vals) in packs:
+        return struct.pack(packs[len(vals)], *vals)
+    return ''
+
+
+def unpack_zip64_data(data):
+    data_length = len(data)
+    if data_length == 28:
+        counts = struct.unpack('<QQQL', data)
+    elif data_length == 24:
+        counts = struct.unpack('<QQQ', data)
     elif data_length == 16:
-        counts = struct.unpack('<QQ', extra)
+        counts = struct.unpack('<QQ', data)
     elif data_length == 8:
-        counts = struct.unpack('<Q', extra)
+        counts = struct.unpack('<Q', data)
     elif data_length == 0:
         counts = ()
     else:
         raise RuntimeError, "Corrupt extra field %s" % (data_length,)
 
-    pre_extra.counts = counts
-    return pre_extra
+    return counts
