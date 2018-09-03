@@ -1,4 +1,4 @@
-# zippkg 0.1
+# zippkg 0.1 beta
 
 Vision of this project is build a powerful zip read and write tool. 
 Python environment: python 2.7
@@ -15,11 +15,11 @@ I got some problems when I use Python2.7 standard lib `zipfile`. Here are the re
 
 `ZipReader`: reader for zip file. It is supports zip64, zip standard decryption, AES decryption.
 
-`ZipWriter`: writer for zip file. Supports zip standard encryption, AES encryption. 
+`ZipWriter`: writer for zip file. Supports zip64, zip standard encryption, AES encryption. 
 
 
 ## TODO
-ZipWriter support zip64
+huge file support
 
 ## Example
 
